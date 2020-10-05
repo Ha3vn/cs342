@@ -1,3 +1,5 @@
+import torchvision
+
 from .models import CNNClassifier, save_model, ClassificationLoss
 from .utils import accuracy, load_data
 import torch
@@ -22,20 +24,37 @@ def train(args):
     epochs = 5
 
     data = load_data('data/train')
+    global_step = 0
 
     for epoch in range(epochs):
+        # Set the model to training mode.
         model.train()
 
         for x, y in data:
             x = x.to(device)
             y = y.to(device)
 
+            # if global_step == 0:
+            #     train_logger.add_graph(model, x)
+
+            # if global_step % 100 == 0:
+            #     image_grid = (torchvision.utils.make_grid(x) * 255).byte()
+            #     train_logger.add_image('image', image_grid, global_step=global_step)
+
             y_pred = model(x)
+
+            # Compute loss and update model weights.
             loss = loss_func(y_pred, y)
+            accuracy = (y_pred.argmax(1) == y).float().mean()
 
             loss.backward()
             optim.step()
             optim.zero_grad()
+
+            # Add loss to TensorBoard.
+            # train_logger.add_scalar('accuracy', accuracy, global_step=global_step)
+            # train_logger.add_scalar('loss', loss.item(), global_step=global_step)
+            global_step += 1
 
     save_model(model)
 
