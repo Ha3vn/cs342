@@ -12,23 +12,19 @@ def train(args):
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     loss_func = ClassificationLoss()
-    optim = torch.optim.SGD(model.parameters(), lr=0.02, momentum=0.9, weight_decay=1e-6)
-    epochs = 10
+    optim = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-6)
+    epochs = 5
 
-    data_train = load_data('data/train')
-    data_val = load_data('data/valid')
+    data = load_data('data/train')
 
     for epoch in range(epochs):
-        # Set the model to training mode.
         model.train()
 
-        for x, y in data_train:
+        for x, y in data:
             x = x.to(device)
             y = y.to(device)
 
             y_pred = model(x)
-
-            # Compute loss and update model weights.
             loss = loss_func(y_pred, y)
 
             loss.backward()
