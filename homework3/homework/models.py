@@ -2,22 +2,72 @@ import torch
 import torch.nn.functional as F
 
 
+class ClassificationLoss(torch.nn.Module):
+    def forward(self, input, target):
+        """
+        Your code here
+
+        Compute mean(-log(softmax(input)_label))
+
+        @input:  torch.Tensor((B,C))
+        @target: torch.Tensor((B,), dtype=torch.int64)
+
+        @return:  torch.Tensor((,))
+
+        Hint: Don't be too fancy, this is a one-liner
+        """
+        return F.cross_entropy(input, target)
+
+
+class CNNBlock(torch.nn.Module):
+    def __init__(self, c_in, c_out, should_stride=False):
+        super().__init__()
+
+        if should_stride:
+            stride = 2
+        else:
+            stride = 1
+
+        self.conv1 = torch.nn.Conv2d(c_in, c_out, 3, stride=1, padding=1)
+        self.bn1 = torch.nn.BatchNorm2d(c_out)
+        self.conv2 = torch.nn.Conv2d(c_out, c_out, 3, stride=stride, padding=1)
+        self.bn2 = torch.nn.BatchNorm2d(c_out)
+        self.relu = torch.nn.ReLU()
+        self.use_residual = c_in == c_out
+
+    def forward(self, x):
+        x_next = self.relu(self.bn1(self.conv1(x)))   # (128, 3, 32, 32)
+        x_next = self.conv2(x_next)
+        x_next = self.bn2(x_next)
+        x_next = self.relu(x_next)
+        return x_next
+
+
 class CNNClassifier(torch.nn.Module):
-    def __init__(self, layers=[16, 32, 64, 128], n_input_channels=3, n_output_channels=6, kernel_size=5):
+    def __init__(self):
         super().__init__()
         """
         Your code here
         Hint: Base this on yours or HW2 master solution if you'd like.
         Hint: Overall model can be similar to HW2, but you likely need some architecture changes (e.g. ResNets)
         """
-        L = []
-        c = n_input_channels
-        for l in layers:
-            L.append(torch.nn.Conv2d(c, l, kernel_size, stride=2, padding=kernel_size // 2))
-            L.append(torch.nn.ReLU())
-            c = l
-        self.network = torch.nn.Sequential(*L)
-        self.classifier = torch.nn.Linear(c, n_output_channels)
+        input_channels = 3
+        num_classes = 10
+        n_layers = 6
+        width = 64
+
+        c_in = width
+        c_out = width
+
+        layers = list()
+        layers.append(torch.nn.Conv2d(input_channels, c_out, 3, padding=1))
+
+        for i in range(n_layers):
+            layers.append(CNNBlock(c_in, c_out, should_stride=i % 2 == 0))
+            c_in = c_out
+
+        self.feature_extractor = torch.nn.Sequential(*layers)
+        self.linear = torch.nn.Linear(c_in, num_classes)
 
     def forward(self, x):
         """
@@ -26,7 +76,14 @@ class CNNClassifier(torch.nn.Module):
         @return: torch.Tensor((B,6))
         Hint: Apply input normalization inside the network, to make sure it is applied in the grader
         """
-        return self.classifier(self.network(x).mean(dim=[2, 3]))
+        x[:, 0] = (x[:, 0] - 0.5) / 0.5
+        x[:, 1] = (x[:, 1] - 0.5) / 0.5
+        x[:, 2] = (x[:, 2] - 0.5) / 0.5
+
+        x = self.feature_extractor(x)
+        x = x.mean((2, 3))
+
+        return self.linear(x)
 
 
 class FCN(torch.nn.Module):
