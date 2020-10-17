@@ -87,7 +87,7 @@ class CNNClassifier(torch.nn.Module):
 
 
 class FCN(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, input_channels=3, output_channels=1):
         super().__init__()
         """
         Your code here.
@@ -97,7 +97,26 @@ class FCN(torch.nn.Module):
         Hint: Use residual connections
         Hint: Always pad by kernel_size / 2, use an odd kernel_size
         """
-        raise NotImplementedError('FCN.__init__')
+        self.down1 = torch.nn.Sequential(
+            torch.nn.Conv2d(input_channels, 128, kernel_size=3, stride=2, padding=1),
+            torch.nn.BatchNorm2d(128),
+            torch.nn.ReLU()
+        )
+        self.downN = torch.nn.Sequential(
+            torch.nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            torch.nn.BatchNorm2d(128),
+            torch.nn.ReLU()
+        )
+        self.upN = torch.nn.Sequential(
+            torch.nn.ConvTranspose2d(128, 128, kernel_size=3, stride=1, padding=1),
+            torch.nn.BatchNorm2d(128),
+            torch.nn.ReLU()
+        )
+        self.up1 = torch.nn.Sequential(
+            torch.nn.ConvTranspose2d(256, 5, kernel_size=4, stride=2 ,padding=1),
+            # torch.nn.BatchNorm2d(5),
+            # torch.nn.ReLU()
+        )
 
     def forward(self, x):
         """
@@ -109,7 +128,21 @@ class FCN(torch.nn.Module):
               if required (use z = z[:, :, :H, :W], where H and W are the height and width of a corresponding strided
               convolution
         """
-        raise NotImplementedError('FCN.forward')
+        b, a, h, w = x.shape
+        x_down1 = self.down1(x)         # x_down1 N 128, 64, 64
+        x_downN = self.downN(x_down1)   # x_downN N 128, 64, 64
+
+        x_downN = self.downN(x_downN)
+        x_downN = self.downN(x_downN)
+        x_upN = self.upN(x_downN)
+        x_upN = self.upN(x_upN)
+
+        x_upN = self.upN(x_upN)       # x_upN   N 128, 64, 64
+
+        x_wskip = torch.cat([x_upN, x_down1], dim=1)   # N 256, 64, 64
+        x_up1 = self.up1(x_wskip)         # x_up1   NC 256, 128
+        x_up1 = x_up1[:, :, :h, :w]
+        return x_up1
 
 
 model_factory = {
