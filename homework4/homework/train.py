@@ -32,7 +32,7 @@ def train(args):
     loss = torch.nn.CrossEntropyLoss(weight=w / w.mean()).to(device)
 
     import inspect
-    transform = eval(args.transform, {k: v for k, v in inspect.getmembers(dense_transforms) if inspect.isclass(v)})
+    transform = eval(args.transform, {k: v for k, v in inspect.getmembers(dense_transforms.Compose([dense_transforms.ToTensor(), dense_transforms.ToHeatmap()])) if inspect.isclass(v)})
     train_data = load_detection_data('dense_data/train', num_workers=4, transform=transform)
     valid_data = load_detection_data('dense_data/valid', num_workers=4)
 
