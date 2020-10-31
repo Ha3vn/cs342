@@ -1,9 +1,9 @@
 import torch
 import numpy as np
 
-from .models import Detector, save_model, ClassificationLoss
+from .models import Detector, save_model
 from .utils import load_detection_data, DENSE_CLASS_DISTRIBUTION, ConfusionMatrix
-from . import dense_transforms as t
+from . import dense_transforms
 import torch.utils.tensorboard as tb
 
 
@@ -18,52 +18,69 @@ def train(args):
     """
     Your code here, modify your HW3 code
     """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model.to(device)
-    loss_func = ClassificationLoss()
-    # loss_func = torch.nn.CrossEntropyLoss(torch.tensor([0.01, 0.05, 0.02, 0.46, 0.46]))
-    loss_func.to(device)
-    optim = torch.optim.SGD(model.parameters(), lr=0.016, momentum=0.92, weight_decay=1e-4)
-    epochs = 30
+    import torch
 
-    train_trans = t.Compose(
-        (t.ColorJitter(0.3, 0.3, 0.3, 0.3), t.RandomHorizontalFlip(), t.RandomCrop(96), t.ToTensor()))  # 96
-    # val_trans = T.Compose((T.CenterCrop(96), T.ToTensor()))
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-    data = load_detection_data('dense_data/train', transform=train_trans)
-    val = load_detection_data('dense_data/valid')
+    model = Detector().to(device)
+    if args.continue_training:
+        model.load_state_dict(torch.load(path.join(path.dirname(path.abspath(__file__)), 'fcn.th')))
 
-    for epoch in range(epochs):
+    # optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=0.9, weight_decay=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=1e-5)
+    w = torch.as_tensor(DENSE_CLASS_DISTRIBUTION) ** (-args.gamma)
+    loss = torch.nn.CrossEntropyLoss(weight=w / w.mean()).to(device)
+
+    import inspect
+    transform = eval(args.transform, {k: v for k, v in inspect.getmembers(dense_transforms) if inspect.isclass(v)})
+    train_data = load_detection_data('dense_data/train', num_workers=4, transform=transform)
+    valid_data = load_detection_data('dense_data/valid', num_workers=4)
+
+    global_step = 0
+    for epoch in range(args.num_epoch):
         model.train()
-        count = 0
-        total_loss = 0
-        for x, y in data:
-            x = x.to(device)
-            y = y.to(device)
-            y_pred = model(x)
-            loss = loss_func(y_pred, y.long())
-            total_loss = total_loss + loss.item()
-            count += 1
-            loss.backward()
-            optim.step()
-            optim.zero_grad()
-        print("Epoch: " + str(epoch) + ", Loss: " + str(total_loss / count))
+        conf = ConfusionMatrix()
+        for img, label in train_data:
+            img, label = img.to(device), label.to(device).long()
+
+            logit = model(img)
+            loss_val = loss(logit, label)
+            if train_logger is not None and global_step % 100 == 0:
+                log(train_logger, img, label, logit, global_step)
+
+            if train_logger is not None:
+                train_logger.add_scalar('loss', loss_val, global_step)
+            conf.add(logit.argmax(1), label)
+
+            optimizer.zero_grad()
+            loss_val.backward()
+            optimizer.step()
+            global_step += 1
+
+        if train_logger:
+            train_logger.add_scalar('global_accuracy', conf.global_accuracy, global_step)
+            train_logger.add_scalar('average_accuracy', conf.average_accuracy, global_step)
+            train_logger.add_scalar('iou', conf.iou, global_step)
 
         model.eval()
-        count = 0
-        accuracy = 0
-        for image, label in val:
-            image = image.to(device)
-            label = label.to(device)
-            pred = model(image)
-            accuracy = accuracy + (pred.argmax(1) == label).float().mean().item()
-            count += 1
-        print("Epoch: " + str(epoch) + ", Accuracy: " + str(accuracy / count))
-        if accuracy / count > 0.87:
-            print("break -> done")
-            break
+        val_conf = ConfusionMatrix()
+        for img, label in valid_data:
+            img, label = img.to(device), label.to(device).long()
+            logit = model(img)
+            val_conf.add(logit.argmax(1), label)
 
-    save_model(model)
+        if valid_logger is not None:
+            log(valid_logger, img, label, logit, global_step)
+
+        if valid_logger:
+            valid_logger.add_scalar('global_accuracy', val_conf.global_accuracy, global_step)
+            valid_logger.add_scalar('average_accuracy', val_conf.average_accuracy, global_step)
+            valid_logger.add_scalar('iou', val_conf.iou, global_step)
+
+        if valid_logger is None or train_logger is None:
+            print('epoch %-3d \t acc = %0.3f \t val acc = %0.3f \t iou = %0.3f \t val iou = %0.3f' %
+                  (epoch, conf.global_accuracy, val_conf.global_accuracy, conf.iou, val_conf.iou))
+        save_model(model)
 
 
 def log(logger, imgs, gt_det, det, global_step):
