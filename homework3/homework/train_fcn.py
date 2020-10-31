@@ -3,7 +3,7 @@ import numpy as np
 
 from .models import FCN, save_model, ClassificationLoss
 from .utils import load_dense_data, DENSE_CLASS_DISTRIBUTION, ConfusionMatrix
-from . import dense_transforms
+from . import dense_transforms as T
 import torch.utils.tensorboard as tb
 
 
@@ -24,13 +24,16 @@ def train(args):
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
-    # loss_func = ClassificationLoss()
-    loss_func = torch.nn.CrossEntropyLoss(torch.tensor([0.05, 0.2, 0.05, 0.35, 0.35]))
+    loss_func = ClassificationLoss()
+    # loss_func = torch.nn.CrossEntropyLoss(torch.tensor([0.01, 0.05, 0.02, 0.46, 0.46]))
     loss_func.to(device)
-    optim = torch.optim.SGD(model.parameters(), lr=0.02, momentum=0.95, weight_decay=1e-6)
-    epochs = 20
+    optim = torch.optim.SGD(model.parameters(), lr=0.016, momentum=0.92, weight_decay=1e-4)
+    epochs = 30
 
-    data = load_dense_data('dense_data/train')
+    train_trans = T.Compose((T.ColorJitter(0.3, 0.3, 0.3, 0.3), T.RandomHorizontalFlip(), T.RandomCrop(96), T.ToTensor())) # 96
+    # val_trans = T.Compose((T.CenterCrop(96), T.ToTensor()))
+
+    data = load_dense_data('dense_data/train', transform=train_trans)
     val = load_dense_data('dense_data/valid')
 
     for epoch in range(epochs):
@@ -59,6 +62,9 @@ def train(args):
           accuracy = accuracy + (pred.argmax(1) == label).float().mean().item()
           count += 1
         print("Epoch: " + str(epoch) + ", Accuracy: " + str(accuracy/count))
+        if accuracy/count > 0.87:
+          print("break -> done")
+          break
 
     save_model(model)
 

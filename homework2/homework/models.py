@@ -2,11 +2,6 @@ import torch
 import torch.nn.functional as f
 
 
-class Flatten(torch.nn.Module):
-    def forward(self, x):
-        return x.reshape(x.shape[0], -1)
-
-
 class ClassificationLoss(torch.nn.Module):
     def forward(self, input, target):
         """
@@ -33,20 +28,19 @@ class CNNBlock(torch.nn.Module):
         else:
             stride = 1
 
-        self.conv1 = torch.nn.Conv2d(c_in, c_out, 3, padding=1, stride=stride)
+        self.conv1 = torch.nn.Conv2d(c_in, c_out, 3, stride=1, padding=1)
+        self.bn1 = torch.nn.BatchNorm2d(c_out)
+        self.conv2 = torch.nn.Conv2d(c_out, c_out, 3, stride=stride, padding=1)
+        self.bn2 = torch.nn.BatchNorm2d(c_out)
         self.relu = torch.nn.ReLU()
-        self.conv2 = torch.nn.Conv2d(c_out, c_out, 3, padding=1)
-
-        if c_in != c_out or should_stride:
-            self.identity = torch.nn.Conv2d(c_in, c_out, 1, stride=stride)
-        else:
-            self.identity = lambda x: x
+        self.use_residual = c_in == c_out
 
     def forward(self, x):
-        f_x = self.conv2(self.relu(self.conv1(x)))
-        x = self.identity(x)
-
-        return self.relu(x + f_x)
+        x_next = self.relu(self.bn1(self.conv1(x)))   # (128, 3, 32, 32)
+        x_next = self.conv2(x_next)
+        x_next = self.bn2(x_next)
+        x_next = self.relu(x_next)
+        return x_next
 
 
 class CNNClassifier(torch.nn.Module):
@@ -69,9 +63,7 @@ class CNNClassifier(torch.nn.Module):
 
         for i in range(n_layers):
             layers.append(CNNBlock(c_in, c_out, should_stride=i % 2 == 0))
-
             c_in = c_out
-            c_out = 2 * c_out
 
         self.feature_extractor = torch.nn.Sequential(*layers)
         self.linear = torch.nn.Linear(c_in, num_classes)

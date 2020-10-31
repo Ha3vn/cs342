@@ -2,6 +2,7 @@ from .models import CNNClassifier, save_model, ClassificationLoss
 from .utils import ConfusionMatrix, load_data, LABEL_NAMES
 import torch
 import torchvision
+import torchvision.transforms as T
 import torch.utils.tensorboard as tb
 
 
@@ -19,21 +20,43 @@ def train(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
     loss_func = ClassificationLoss()
-    optim = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.95, weight_decay=1e-6)
-    epochs = 10
+    # loss_func = torch.nn.CrossEntropyLoss(torch.tensor([0.05, 0.2, 0.05, 0.35, 0.35]))
+    loss_func.to(device)
+    optim = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.92, weight_decay=1e-4)
+    epochs = 50
 
-    data = load_data('data/train')
+    train_trans = T.Compose((T.ToPILImage(), T.ColorJitter(0.8, 0.3), T.RandomHorizontalFlip(), T.RandomCrop(32), T.ToTensor())) # 96
+    val_trans = T.Compose((T.ToPILImage(), T.CenterCrop(size=32), T.ToTensor()))
+
+    data = load_data('data/train', transform=train_trans)
+    val = load_data('data/valid', transform=val_trans)
 
     for epoch in range(epochs):
         model.train()
+        count = 0
+        total_loss = 0
         for x, y in data:
             x = x.to(device)
             y = y.to(device)
             y_pred = model(x)
-            loss = loss_func(y_pred, y)
+            loss = loss_func(y_pred, y.long())
+            total_loss = total_loss + loss.item()
+            count += 1
             loss.backward()
             optim.step()
             optim.zero_grad()
+        print("Epoch: " + str(epoch) + ", Loss: " + str(total_loss/count))
+
+        model.eval()
+        count = 0
+        accuracy = 0
+        for image, label in val:
+          image = image.to(device)
+          label = label.to(device)
+          pred = model(image)
+          accuracy = accuracy + (pred.argmax(1) == label).float().mean().item()
+          count += 1
+        print("Epoch: " + str(epoch) + ", Accuracy: " + str(accuracy/count))
 
     save_model(model)
 
