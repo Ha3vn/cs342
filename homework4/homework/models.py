@@ -29,12 +29,21 @@ def extract_peak(heatmap, max_pool_ks=7, min_score=-5, max_det=100):
        @return: List of peaks [(score, cx, cy), ...], where cx, cy are the position of a peak and score is the
                 heatmap value at the peak. Return no more than max_det peaks per image
     """
-    max_cls = F.max_pool2d(heatmap[None, None], kernel_size=max_pool_ks, padding=max_pool_ks // 2, stride=1)[0, 0]
+    max_cls, indices = F.max_pool2d(heatmap[None, None], kernel_size=max_pool_ks, padding=max_pool_ks // 2, stride=1, return_indices=True)
 
     # tip: visualize is_peak and heatmap side by side.
     is_peak = (heatmap >= max_cls).float()
 
-    raise NotImplementedError('extract_peak')
+    mask = torch.logical_and(max_cls > min_score, is_peak == 1.0)
+    max_cls = max_cls[mask]
+    indices = indices[mask]
+
+    top_peaks, i = torch.topk(max_cls, min(max_det, len(max_cls)))
+    w = heatmap.shape[1]
+    pos_x = indices[i] % w
+    pos_y = indices[i] // w
+
+    return [*zip(top_peaks, pos_x, pos_y)]
 
 
 class CNNClassifier(torch.nn.Module):
@@ -81,7 +90,7 @@ class Detector(torch.nn.Module):
         def forward(self, x):
             return F.relu(self.c1(x))
 
-    def __init__(self, layers=[16, 32, 64, 128], n_output_channels=5, kernel_size=3, use_skip=True):
+    def __init__(self, layers=[16, 32, 64, 128], n_output_channels=3, kernel_size=3, use_skip=True):
         super().__init__()
         self.input_mean = torch.Tensor([0.3521554, 0.30068502, 0.28527516])
         self.input_std = torch.Tensor([0.18182722, 0.18656468, 0.15938024])
@@ -130,7 +139,16 @@ class Detector(torch.nn.Module):
                  scalar. Otherwise pytorch might keep a computation graph in the background and your program will run
                  out of memory.
         """
-        raise NotImplementedError('Detector.detect')
+        heatmaps = self(image[None]).squeeze(0)
+        ks = [9, 11, 11]
+        det = [15, 10, 10]
+        res = []
+        for i in range(3):
+            heatmap = heatmaps[i]
+            peaks = extract_peak(heatmap, max_pool_ks=ks[i], min_score=-5, max_det=det[i])
+            detections = [peak + (0, 0) for peak in peaks]
+            res.append(detections)
+        return res
 
 
 def save_model(model):

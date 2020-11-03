@@ -2,14 +2,15 @@ import torch
 import numpy as np
 
 from .models import Detector, save_model
-from .utils import load_detection_data, DENSE_CLASS_DISTRIBUTION, ConfusionMatrix
+from .utils import load_detection_data, DetectionSuperTuxDataset, PR, point_close
 from . import dense_transforms
 import torch.utils.tensorboard as tb
 
 
 def train(args):
     from os import path
-    model = Detector()
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    model = Detector().to(device)
     train_logger, valid_logger = None, None
     if args.log_dir is not None:
         train_logger = tb.SummaryWriter(path.join(args.log_dir, 'train'), flush_secs=1)
@@ -18,69 +19,70 @@ def train(args):
     """
     Your code here, modify your HW3 code
     """
-    import torch
+    epochs = 20
+    lr = 0.02
+    global_step = 0
+    weight = 100
 
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    weights = torch.FloatTensor([0.5, 0.75, 0,25]).to(device)
+    loss = torch.nn.BCEWithLogitsLoss(reduction='none').to(device)
+    d_loss = torch.nn.MSELoss(reduction='none').to(device)
 
-    model = Detector().to(device)
-    if args.continue_training:
-        model.load_state_dict(torch.load(path.join(path.dirname(path.abspath(__file__)), 'fcn.th')))
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=7)
 
-    # optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=0.9, weight_decay=1e-3)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=1e-5)
-    w = torch.as_tensor(DENSE_CLASS_DISTRIBUTION) ** (-args.gamma)
-    loss = torch.nn.CrossEntropyLoss(weight=w / w.mean()).to(device)
-
-    import inspect
-    transform = eval(args.transform, {k: v for k, v in inspect.getmembers(dense_transforms.Compose([dense_transforms.ToTensor(), dense_transforms.ToHeatmap()])) if inspect.isclass(v)})
-    train_data = load_detection_data('dense_data/train', num_workers=4, transform=transform)
+    train_data = load_detection_data('dense_data/train', num_workers=4)
     valid_data = load_detection_data('dense_data/valid', num_workers=4)
 
-    global_step = 0
-    for epoch in range(args.num_epoch):
+    print("Training...")
+    for epoch in range(epochs):
+        print(epoch, "--------------------------------")
         model.train()
-        conf = ConfusionMatrix()
-        for img, label in train_data:
-            img, label = img.to(device), label.to(device).long()
+        for image, heatmap, box in train_data:
+            image = image.to(device)
+            heatmap = heatmap.to(device)
 
-            logit = model(img)
-            loss_val = loss(logit, label)
-            if train_logger is not None and global_step % 100 == 0:
-                log(train_logger, img, label, logit, global_step)
+            pred_heatmap = model(image)
+            mask = heatmap.sum(1)
+            mask[mask > 1] = 1
+            mask = mask.round()
 
-            if train_logger is not None:
-                train_logger.add_scalar('loss', loss_val, global_step)
-            conf.add(logit.argmax(1), label)
+            l1 = loss(pred_heatmap, heatmap).mean()
+            l2 = (mask[:, None] * d_loss(pred_heatmap, heatmap)).mean()
+            l = l1 + weight * l2
 
-            optimizer.zero_grad()
-            loss_val.backward()
-            optimizer.step()
+            # print(image, "***************************")
+            # log(train_logger, image, heatmap, pred_heatmap, global_step)
+            # train_logger.add_scalar('loss', l.item(), global_step=global_step)
             global_step += 1
 
-        if train_logger:
-            train_logger.add_scalar('global_accuracy', conf.global_accuracy, global_step)
-            train_logger.add_scalar('average_accuracy', conf.average_accuracy, global_step)
-            train_logger.add_scalar('iou', conf.iou, global_step)
+            optimizer.zero_grad()
+            l.backward()
+            optimizer.step()
+        if epoch % 10 == 0:
+            model.eval()
+            pr_box = [PR() for _ in range(3)]
+            pr_dist = [PR(is_close=point_close) for _ in range(3)]
+            # pr_iou = [PR(is_close=box_iou) for _ in range(3)]
+            for img, *gts in DetectionSuperTuxDataset('dense_data/valid', min_size=0):
+                detections = model.detect(img.to(device))
+                for i, gt in enumerate(gts):
+                    pr_box[i].add(detections[i], gt)
+                    pr_dist[i].add(detections[i], gt)
+            print(pr_box[0].average_prec, pr_box[1].average_prec, pr_box[2].average_prec)
+            print(pr_dist[0].average_prec, pr_dist[1].average_prec, pr_dist[2].average_prec)
+            # valid_logger.add_scalar('pr_box_0', pr_box[0].average_prec, global_step=global_step)
+            # valid_logger.add_scalar('pr_box_1', pr_box[1].average_prec, global_step=global_step)
+            # valid_logger.add_scalar('pr_box_2', pr_box[2].average_prec, global_step=global_step)
+            # valid_logger.add_scalar('pr_dist_0', pr_dist[0].average_prec, global_step=global_step)
+            # valid_logger.add_scalar('pr_dist_1', pr_dist[1].average_prec, global_step=global_step)
+            # valid_logger.add_scalar('pr_dist_2', pr_dist[2].average_prec, global_step=global_step)
 
-        model.eval()
-        val_conf = ConfusionMatrix()
-        for img, label in valid_data:
-            img, label = img.to(device), label.to(device).long()
-            logit = model(img)
-            val_conf.add(logit.argmax(1), label)
-
-        if valid_logger is not None:
-            log(valid_logger, img, label, logit, global_step)
-
-        if valid_logger:
-            valid_logger.add_scalar('global_accuracy', val_conf.global_accuracy, global_step)
-            valid_logger.add_scalar('average_accuracy', val_conf.average_accuracy, global_step)
-            valid_logger.add_scalar('iou', val_conf.iou, global_step)
-
-        if valid_logger is None or train_logger is None:
-            print('epoch %-3d \t acc = %0.3f \t val acc = %0.3f \t iou = %0.3f \t val iou = %0.3f' %
-                  (epoch, conf.global_accuracy, val_conf.global_accuracy, conf.iou, val_conf.iou))
-        save_model(model)
+            if pr_box[0].average_prec > 0.83:
+                break
+        scheduler.step(l.item())
+    print("Done")
+    save_model(model)
 
 
 def log(logger, imgs, gt_det, det, global_step):
