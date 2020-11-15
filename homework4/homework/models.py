@@ -2,23 +2,6 @@ import torch
 import torch.nn.functional as F
 
 
-class ClassificationLoss(torch.nn.Module):
-    def forward(self, input, target):
-        """
-        Your code here
-
-        Compute mean(-log(softmax(input)_label))
-
-        @input:  torch.Tensor((B,C))
-        @target: torch.Tensor((B,), dtype=torch.int64)
-
-        @return:  torch.Tensor((,))
-
-        Hint: Don't be too fancy, this is a one-liner
-        """
-        return F.cross_entropy(input, target)
-
-
 def extract_peak(heatmap, max_pool_ks=7, min_score=-5, max_det=100):
     """
        Your code here.
@@ -37,13 +20,9 @@ def extract_peak(heatmap, max_pool_ks=7, min_score=-5, max_det=100):
     mask = torch.logical_and(max_cls > min_score, is_peak == 1.0)
     max_cls = max_cls[mask]
     indices = indices[mask]
+    peaks, i = torch.topk(max_cls, min(max_det, len(max_cls)))
 
-    top_peaks, i = torch.topk(max_cls, min(max_det, len(max_cls)))
-    w = heatmap.shape[1]
-    pos_x = indices[i] % w
-    pos_y = indices[i] // w
-
-    return [*zip(top_peaks, pos_x, pos_y)]
+    return [*zip(peaks, indices[i] % heatmap.shape[1], indices[i] // heatmap.shape[1])]
 
 
 class CNNClassifier(torch.nn.Module):
@@ -139,16 +118,7 @@ class Detector(torch.nn.Module):
                  scalar. Otherwise pytorch might keep a computation graph in the background and your program will run
                  out of memory.
         """
-        heatmaps = self(image[None]).squeeze(0)
-        ks = [9, 11, 11]
-        det = [15, 10, 10]
-        res = []
-        for i in range(3):
-            heatmap = heatmaps[i]
-            peaks = extract_peak(heatmap, max_pool_ks=ks[i], min_score=-5, max_det=det[i])
-            detections = [peak + (0, 0) for peak in peaks]
-            res.append(detections)
-        return res
+        return [[(*peak, 0, 0) for peak in extract_peak(heatmap, max_pool_ks=11, max_det=15)] for heatmap in self(image[None]).squeeze(0)]
 
 
 def save_model(model):
