@@ -1,4 +1,3 @@
-import os
 import numpy as np
 import pystk
 
@@ -9,10 +8,6 @@ from . import dense_transforms
 RESCUE_TIMEOUT = 30
 TRACK_OFFSET = 15
 DATASET_PATH = 'drive_data'
-ON_COLAB = os.environ.get('ON_COLAB', False)
-COLAB_IMAGES = list()
-
-print(ON_COLAB)
 
 
 class SuperTuxDataset(Dataset):
@@ -33,20 +28,12 @@ class SuperTuxDataset(Dataset):
     def __getitem__(self, idx):
         data = self.data[idx]
         data = self.transform(*data)
-        image, label = data
-        return image, label
+        return data
 
 
 def load_data(dataset_path=DATASET_PATH, transform=dense_transforms.ToTensor(), num_workers=0, batch_size=128):
     dataset = SuperTuxDataset(dataset_path, transform=transform)
     return DataLoader(dataset, num_workers=num_workers, batch_size=batch_size, shuffle=True, drop_last=True)
-
-
-def show_on_colab():
-    from moviepy.editor import ImageSequenceClip
-    from IPython.display import display
-
-    display(ImageSequenceClip(COLAB_IMAGES, fps=15).ipython_display(width=512, autoplay=True, loop=True, maxduration=120))
 
 
 class PyTux:
@@ -110,12 +97,9 @@ class PyTux:
 
         last_rescue = 0
 
-        if verbose and not ON_COLAB:
+        if verbose:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(1, 1)
-        elif verbose and ON_COLAB:
-            global COLAB_IMAGES
-            COLAB_IMAGES = list()
 
         for t in range(max_frames):
 
@@ -134,23 +118,21 @@ class PyTux:
 
             aim_point_world = self._point_on_track(kart.distance_down_track+TRACK_OFFSET, track)
             aim_point_image = self._to_image(aim_point_world, proj, view)
-            aim_point = aim_point_image
-
             if data_callback is not None:
                 data_callback(t, np.array(self.k.render_data[0].image), aim_point_image)
 
             if planner:
                 image = np.array(self.k.render_data[0].image)
-                aim_point = planner(TF.to_tensor(image)[None]).squeeze(0).cpu().detach().numpy()
+                aim_point_image = planner(TF.to_tensor(image)[None]).squeeze(0).cpu().detach().numpy()
 
             current_vel = np.linalg.norm(kart.velocity)
-            action = controller(aim_point, current_vel)
+            action = controller(aim_point_image, current_vel)
 
             if current_vel < 1.0 and t - last_rescue > RESCUE_TIMEOUT:
                 last_rescue = t
                 action.rescue = True
 
-            if verbose and not ON_COLAB:
+            if verbose:
                 ax.clear()
                 ax.imshow(self.k.render_data[0].image)
                 WH2 = np.array([self.config.screen_width, self.config.screen_height]) / 2
@@ -160,27 +142,9 @@ class PyTux:
                     ap = self._point_on_track(kart.distance_down_track + TRACK_OFFSET, track)
                     ax.add_artist(plt.Circle(WH2*(1+aim_point_image), 2, ec='g', fill=False, lw=1.5))
                 plt.pause(1e-3)
-            elif verbose and ON_COLAB:
-                from PIL import Image, ImageDraw
-                image = Image.fromarray(self.k.render_data[0].image)
-                draw = ImageDraw.Draw(image)
-
-                WH2 = np.array([self.config.screen_width, self.config.screen_height]) / 2
-
-                p = (aim_point_image + 1) * WH2
-                draw.ellipse((p[0] - 2, p[1] - 2, p[0]+2, p[1]+2), fill=(255, 0, 0))
-                if planner:
-                    p = (aim_point + 1) * WH2
-                    draw.ellipse((p[0] - 2, p[1] - 2, p[0]+2, p[1]+2), fill=(0, 255, 0))
-
-                COLAB_IMAGES.append(np.array(image))
 
             self.k.step(action)
             t += 1
-
-        if verbose and ON_COLAB:
-            show_on_colab()
-
         return t, kart.overall_distance / track.length
 
     def close(self):
@@ -193,50 +157,16 @@ class PyTux:
         pystk.clean()
 
 
-def main(pytux, track, output=DATASET_PATH, n_images=10000, steps_per_track=20000, aim_noise=0.1, vel_noise=5, verbose=False):
+if __name__ == '__main__':
     from .controller import control
+    from argparse import ArgumentParser
     from os import makedirs
 
-    try:
-        makedirs(output)
-    except OSError:
-        pass
 
-    track = [track] if isinstance(track, str) else track
+    def noisy_control(aim_pt, vel):
+        return control(aim_pt + np.random.randn(*aim_pt.shape) * aim_noise,
+                       vel + np.random.randn() * vel_noise)
 
-    for t in track:
-        n, images_per_track = 0, n_images // len(track)
-
-        def collect(_, im, pt):
-            from PIL import Image
-            from os import path
-            nonlocal n
-            id = n if n < images_per_track else np.random.randint(0, n + 1)
-            if id < images_per_track:
-                fn = path.join(output, t + '_%05d' % id)
-                Image.fromarray(im).save(fn + '.png')
-                with open(fn + '.csv', 'w') as f:
-                    f.write('%0.1f,%0.1f' % tuple(pt))
-            n += 1
-
-        # Use 0 noise for the first round
-        _aim_noise, _vel_noise = 0, 0
-
-        while n < steps_per_track:
-            def noisy_control(aim_pt, vel):
-                return control(
-                        aim_pt + np.random.randn(*aim_pt.shape) * _aim_noise,
-                        vel + np.random.randn() * _vel_noise)
-
-            steps, how_far = pytux.rollout(t, noisy_control, max_frames=1000, verbose=verbose, data_callback=collect)
-            print(steps, how_far)
-
-            # Add noise after the first round
-            _aim_noise, _vel_noise = aim_noise, vel_noise
-
-
-if __name__ == '__main__':
-    from argparse import ArgumentParser
 
     parser = ArgumentParser("Collects a dataset for the high-level planner")
     parser.add_argument('track', nargs='+')
@@ -247,7 +177,32 @@ if __name__ == '__main__':
     parser.add_argument('--vel_noise', default=5, type=float)
     parser.add_argument('-v', '--verbose', action='store_true')
     args = parser.parse_args()
-
+    try:
+        makedirs(args.output)
+    except OSError:
+        pass
     pytux = PyTux()
-    main(pytux, **vars(args))
+    for track in args.track:
+        n, images_per_track = 0, args.n_images // len(args.track)
+        aim_noise, vel_noise = 0, 0
+
+
+        def collect(_, im, pt):
+            from PIL import Image
+            from os import path
+            global n
+            id = n if n < images_per_track else np.random.randint(0, n + 1)
+            if id < images_per_track:
+                fn = path.join(args.output, track + '_%05d' % id)
+                Image.fromarray(im).save(fn + '.png')
+                with open(fn + '.csv', 'w') as f:
+                    f.write('%0.1f,%0.1f' % tuple(pt))
+            n += 1
+
+
+        while n < args.steps_per_track:
+            steps, how_far = pytux.rollout(track, noisy_control, max_frames=1000, verbose=args.verbose, data_callback=collect)
+            print(steps, how_far)
+            # Add noise after the first round
+            aim_noise, vel_noise = args.aim_noise, args.vel_noise
     pytux.close()
